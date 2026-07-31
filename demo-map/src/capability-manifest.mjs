@@ -17,6 +17,15 @@ const ALIASES = Object.freeze({
   "client:input.pointerLockEvents": "client.input.pointerLockEvents",
 });
 
+const UI_CLASS_INHERITANCE = Object.freeze({
+  UiBox: ["UiRenderable"],
+  UiImage: ["UiRenderable"],
+  UiInput: ["UiRenderable"],
+  UiScale: ["UiRenderable"],
+  UiScrollBox: ["UiRenderable"],
+  UiText: ["UiRenderable"],
+});
+
 const EVENT_PAYLOAD_OWNERS = Object.freeze({
   onTick: "GameTickEvent",
   nextTick: "GameTickEvent",
@@ -481,7 +490,7 @@ function resolveCanonicalId(side, usage, matrix, current, inferredOwner = null) 
   const direct = `${side}.${root}.${member}`;
   if (matrix.has(direct)) return direct;
   if (current.get(direct)?.availability === "confirmed") return direct;
-  const owners = owner === "GamePlayerEntity" ? new Set([owner, "GameEntity"]) : new Set([owner, root]);
+  const owners = owner === "GamePlayerEntity" ? new Set([owner, "GameEntity"]) : new Set([owner, root, ...(UI_CLASS_INHERITANCE[owner] ?? [])]);
   const candidates = [...matrix.values()].filter(entry => entry.side === side && entry.name === member && owners.has(entry.owner));
   if (candidates.length === 1) return candidates[0].id;
   const recoveredCandidates = [...current.values()].filter(entry => entry.side === side && entry.name === member && owners.has(entry.owner) && entry.availability === "confirmed");
@@ -492,8 +501,9 @@ function resolveLocalExtension(side, usage, inferredOwner, current) {
   if (!inferredOwner) return null;
   const member = usage.split(".")[1];
   const localOwner = { GameEntity: "RuntimeEntity", GamePlayerEntity: "RuntimePlayer", GameZone: "RuntimeGameZone", QueryList: "RuntimeQueryList", GameRaycastResult: "RuntimeRaycastResult", GameTickEvent: "RuntimeTickEvent", GameChatEvent: "RuntimeChatEvent", GamePurchaseSuccessEvent: "RuntimePurchaseSuccessEvent", GameKeyBoardEvent: "RuntimeKeyBoardEvent", GameClickEvent: "RuntimeClickEvent", GameInputEvent: "RuntimeInputEvent", GameEntityEvent: "RuntimeEntityEvent", GameDamageEvent: "RuntimeDamageEvent", GameDieEvent: "RuntimeDieEvent", GameRespawnEvent: "RuntimeRespawnEvent", GameInteractEvent: "RuntimeInteractEvent", GameFluidContactEvent: "RuntimeFluidContactEvent", GameVoxelContactEvent: "RuntimeVoxelContactEvent" }[inferredOwner] ?? inferredOwner;
+  const localOwners = new Set([localOwner, ...(UI_CLASS_INHERITANCE[localOwner] ?? [])]);
   const candidates = [...current.values()].filter(entry => entry.side === side
-    && entry.owner === localOwner
+    && localOwners.has(entry.owner)
     && entry.name === member
     && (["GameZone", "QueryList", "GameRaycastResult", "GameTickEvent", "GameChatEvent", "GamePurchaseSuccessEvent", "GameKeyBoardEvent", "GameClickEvent", "GameInputEvent", "GameEntityEvent", "GameDamageEvent", "GameDieEvent", "GameRespawnEvent", "GameInteractEvent", "GameFluidContactEvent", "GameVoxelContactEvent"].includes(inferredOwner)
       || !(entry.implements?.length > 0)
