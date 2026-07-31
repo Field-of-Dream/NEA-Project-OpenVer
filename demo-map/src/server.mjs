@@ -29,6 +29,7 @@ const controlToken = process.env.NEA_DEMO_CONTROL_TOKEN ?? randomBytes(32).toStr
 const runtimePackagePath = process.env.NEA_RUNTIME_PACKAGE;
 const sessionPlayers = new Map();
 const playerSessions = new Map();
+let nextPlayerOrdinal = 0;
 const runtimeCompatibility = await loadRepositoryRuntimeCompatibility(repositoryRoot);
 
 let imported = null;
@@ -200,10 +201,13 @@ pipeBackend(child.stdout, process.stdout, line => {
   }
   if (backendEvent?.type === "player-join") {
     if (sessionPlayers.has(backendEvent.sessionLabel)) return;
-    const playerId = `player-${sessionPlayers.size + 1}`;
+    // Never derive the id from sessionPlayers.size: it falls back when a player leaves and
+    // would hand a rejoining session an id that is still bound to another live session.
+    nextPlayerOrdinal += 1;
+    const playerId = `player-${nextPlayerOrdinal}`;
     sessionPlayers.set(backendEvent.sessionLabel, playerId);
     playerSessions.set(playerId, backendEvent.sessionLabel);
-    const player = runtime.addPlayer({
+    runtime.addPlayer({
       id: playerId,
       name: "Guest",
       position: spawnPoint,
@@ -237,8 +241,13 @@ pipeBackend(child.stdout, process.stdout, line => {
     runtime.dispatchGuiMessage(playerId, backendEvent.name, backendEvent.payload);
   }
   if (backendEvent?.type === "client-event") {
-    const playerId = sessionPlayers.get(backendEvent.sessionLabel) ?? [...sessionPlayers.values()][0];
-    if (!playerId) return;
+    // Never fall back to an arbitrary session: attributing a client event to the wrong player
+    // is worse than dropping one that arrived before its join line was parsed.
+    const playerId = sessionPlayers.get(backendEvent.sessionLabel);
+    if (!playerId) {
+      console.warn(`[demo] dropped client event from an unbound session`);
+      return;
+    }
     console.log(`[script:remote] <- ${playerId} ${JSON.stringify(backendEvent.event)}`);
     runtime.dispatchClientEvent(playerId, backendEvent.event);
   }
@@ -247,6 +256,13 @@ pipeBackend(child.stderr, process.stderr);
 
 child.once("spawn", () => {
   console.log(`[demo] Player: http://127.0.0.1:${port}${playerRoute}`);
+});
+child.once("error", error => {
+  // Without this listener a failed spawn raises an unhandled 'error' event and kills the demo
+  // with a bare stack trace instead of a diagnosable message.
+  runtime.stop();
+  console.error(`[demo] Player backend failed to start: ${formatExternalError(error)}`);
+  process.exitCode = 1;
 });
 child.once("exit", (code, signal) => {
   runtime.stop();

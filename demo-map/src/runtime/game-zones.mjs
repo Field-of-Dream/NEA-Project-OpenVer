@@ -37,11 +37,13 @@ export class RuntimeGameZone {
   #enter = new EventSignal();
   #leave = new EventSignal();
   #remove;
+  #reportError;
   #selectorSource = "*";
   #selectorTest = new ParsedGameSelector("*");
 
-  constructor(config, remove) {
+  constructor(config, remove, reportError = () => {}) {
     this.#remove = remove;
+    this.#reportError = reportError;
     this.bounds = new GameBounds3([0, 0, 0], [0, 0, 0]);
     this.selector = "*";
     this.massScale = 0;
@@ -90,19 +92,19 @@ export class RuntimeGameZone {
 
   entities() { return [...this.#active]; }
   onEnter(handler) { return this.#enter.on(handler); }
-  nextEnter() { return this.#enter.next(); }
+  nextEnter(filter) { return this.#enter.next(filter); }
   onLeave(handler) { return this.#leave.on(handler); }
-  nextLeave() { return this.#leave.next(); }
+  nextLeave(filter) { return this.#leave.next(filter); }
   remove() { this.#remove(); }
 
   _enter(tick, entity) {
     this.#active.add(entity);
-    this.#enter.emit(Object.freeze({ tick, entity }));
+    this.#enter.emit(Object.freeze({ tick, entity }), error => this.#reportError("zoneEnter", error));
   }
 
   _leave(tick, entity) {
     this.#active.delete(entity);
-    this.#leave.emit(Object.freeze({ tick, entity }));
+    this.#leave.emit(Object.freeze({ tick, entity }), error => this.#reportError("zoneLeave", error));
   }
 
   _has(entity) { return this.#active.has(entity); }
@@ -118,11 +120,16 @@ export class RuntimeGameZone {
 export class GameZoneSystem {
   #zones = [];
   #tick = 0;
+  #reportError;
+
+  constructor(options = {}) {
+    this.#reportError = typeof options.reportError === "function" ? options.reportError : () => {};
+  }
 
   list() { return this.#zones.slice(); }
 
   add(config = {}) {
-    const zone = new RuntimeGameZone(config, () => this.remove(zone));
+    const zone = new RuntimeGameZone(config, () => this.remove(zone), this.#reportError);
     this.#zones.push(zone);
     return zone;
   }
@@ -137,9 +144,14 @@ export class GameZoneSystem {
 
   poll(tick, entities) {
     this.#tick = tick;
-    for (const zone of this.#zones) {
+    // Iterate a snapshot: an enter/leave handler may call zone.remove(), which splices #zones.
+    for (const zone of [...this.#zones]) {
+      if (!this.#zones.includes(zone)) continue;
       for (const entity of zone.entities()) if (!matches(zone, entity)) zone._leave(tick, entity);
-      for (const entity of entities) if (!zone._has(entity) && matches(zone, entity)) zone._enter(tick, entity);
+      for (const entity of entities) {
+        if (!this.#zones.includes(zone)) break;
+        if (!zone._has(entity) && matches(zone, entity)) zone._enter(tick, entity);
+      }
     }
   }
 }

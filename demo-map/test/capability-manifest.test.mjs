@@ -496,6 +496,25 @@ test("capability manifest propagates entity, player, and client UI variable owne
   assert.deepEqual(result.ui, [{ side: "client", module: "client.js", variable: "label", type: "UiText", source: "create", lookupName: null, receiver: "UiText", matchIds: [], state: "ready", reason: null, properties: ["textContent"] }]);
 });
 
+test("capability manifest resolves inherited UiRenderable members on UI class variables", () => {
+  const result = manifest({
+    clientSource: `
+      const label = UiText.create();
+      label.anchor.copy(Vec2.create({ x: 0, y: 0 }));
+      label.position.offset.copy(Vec2.create({ x: 20, y: 20 }));
+      label.size.offset.copy(Vec2.create({ x: 560, y: 150 }));
+    `,
+  });
+  for (const member of ["anchor", "position", "size"]) {
+    const requirement = result.requirements.find(item => item.usage === `label.${member}`);
+    assert.ok(requirement);
+    assert.equal(requirement.owner, "UiText");
+    assert.equal(requirement.canonicalId, `client.UiRenderable.${member}`);
+    assert.equal(requirement.state, "ready");
+  }
+  assert.equal(result.summary.blocked, 0);
+});
+
 test("capability manifest verifies static UI lookups against the packaged tree", () => {
   const uiState = {
     defaultScreenId: "SCREEN",

@@ -20,6 +20,10 @@ import { raycastWorld, RuntimeRaycastResult } from "./game-raycast.mjs";
 import { matchesGameSelector } from "./game-selector.mjs";
 
 const EMPTY_PLAYER_TAGS = Object.freeze(new Set());
+// Both buffers exist only to back snapshot(); nothing drains them, so a long-running server
+// would otherwise grow them without bound.
+const MAX_RETAINED_MESSAGES = 1_000;
+const MAX_RETAINED_OUTBOUND_EVENTS = 1_000;
 const GUI_CAPABILITY_MEMBERS = new Set(["init", "show", "remove", "getAttribute", "setAttribute", "onMessage", "ui"]);
 const WORLD_CONFIG_CAPABILITY_MEMBERS = new Set(["gravity", "airFriction", "fogColor"]);
 
@@ -76,6 +80,7 @@ export class ScriptRuntime {
   #players = new Map();
   #playerIds = new WeakMap();
   #entities = new Map();
+  #entityOrdinal = 0;
   #messages = [];
   #outboundEvents = [];
   #collisionFilters = new Map();
@@ -123,7 +128,7 @@ export class ScriptRuntime {
       transport: options.sendGuiCommand,
       resolvePlayerId: entity => this.#playerIds.get(entity) ?? entity?.id,
     });
-    this.zones = new GameZoneSystem();
+    this.zones = new GameZoneSystem({ reportError: (source, error) => this.#reportError(source, error) });
     this.runtimeApiVersion = options.runtimeApiVersion;
     this.serverContract = options.serverContract;
     this.compatibilityLevel = options.compatibilityLevel;
@@ -172,7 +177,9 @@ export class ScriptRuntime {
       const packageTags = Array.isArray(entity.tags) ? entity.tags : [];
       const sourceTags = Array.isArray(entity.source?.tags) ? entity.source.tags : [];
       return {
-        id: packageTags.find(tag => tag.startsWith("id-"))?.slice(3) ?? `entity-${index + 1}`,
+        // Prefer the explicit id. The tag scan only covers packages built before entities.json
+        // carried one, and it is inherently ambiguous when an author tag also starts with "id-".
+        id: entity.id ?? entity.sourceId ?? taggedEntityId(packageTags) ?? `entity-${index + 1}`,
         kind: entity.kind,
         name: entity.name ?? entity.source?.name,
         position: entity.position,
@@ -502,13 +509,15 @@ export class ScriptRuntime {
       say: message => {
         this.#require("server.world.chat");
         const text = String(message);
-        this.#messages.push({ tick: this.currentTick, text });
+        this.#recordMessage({ tick: this.currentTick, text });
         this.logger.info(`[script:world] ${text}`);
         Promise.resolve(this.sendChatMessage(undefined, { text, senderId: 0, private: false, duration: 0, hideFloat: false })).catch(error => this.#reportError("chat-send", error));
       },
       createEntity: spec => {
         this.#require("server.world.entities");
-        const id = spec?.id ?? `runtime-entity-${this.#entities.size + 1}`;
+        // #entities.size falls back when an entity is destroyed, so deriving the ordinal from it
+        // regenerates an id that is still live and makes createEntity throw.
+        const id = spec?.id ?? this.#nextEntityId();
         if (this.#entities.has(id)) throw new Error(`Entity already exists: ${id}`);
         const entity = createRuntimeEntity({
           id,
@@ -575,7 +584,7 @@ export class ScriptRuntime {
       const playerId = this.#playerIds.get(player);
       if (!playerId || !this.#players.has(playerId)) return;
       const clonedEvent = cloneJsonValue(event);
-      this.#outboundEvents.push({ playerId, event: clonedEvent });
+      this.#recordOutboundEvent({ playerId, event: clonedEvent });
       this.logger.info(`[script:remote] -> ${player.name} ${JSON.stringify(clonedEvent)}`);
       Promise.resolve(this.sendClientEvent(playerId, structuredClone(clonedEvent))).catch(error => this.#reportError("remote-send", error));
     };
@@ -694,6 +703,25 @@ export class ScriptRuntime {
     return this.#allQueryableEntities().filter(entity => this.#matchesSelector(entity, selector));
   }
 
+  #nextEntityId() {
+    let id;
+    do {
+      this.#entityOrdinal += 1;
+      id = `runtime-entity-${this.#entityOrdinal}`;
+    } while (this.#entities.has(id));
+    return id;
+  }
+
+  #recordMessage(message) {
+    this.#messages.push(message);
+    if (this.#messages.length > MAX_RETAINED_MESSAGES) this.#messages.splice(0, this.#messages.length - MAX_RETAINED_MESSAGES);
+  }
+
+  #recordOutboundEvent(event) {
+    this.#outboundEvents.push(event);
+    if (this.#outboundEvents.length > MAX_RETAINED_OUTBOUND_EVENTS) this.#outboundEvents.splice(0, this.#outboundEvents.length - MAX_RETAINED_OUTBOUND_EVENTS);
+  }
+
   #dispatchFluidEvent(signalName, entity, contact) {
     const event = Object.freeze(new RuntimeFluidContactEvent(this.currentTick, entity, contact.voxel));
     this.#signals[signalName].emit(event, error => this.#reportError(signalName, error));
@@ -752,7 +780,7 @@ export class ScriptRuntime {
   _messagePlayer(player, message) {
     this.#require("server.world.chat");
     const text = String(message);
-    this.#messages.push({ tick: this.currentTick, playerId: player.id, text });
+    this.#recordMessage({ tick: this.currentTick, playerId: player.id, text });
     this.logger.info(`[script:player:${player.name}] ${text}`);
     Promise.resolve(this.sendChatMessage(this.#playerIds.get(player), { text, senderId: 0, private: true, duration: 0, hideFloat: false })).catch(error => this.#reportError("chat-send", error));
   }
@@ -762,7 +790,7 @@ export class ScriptRuntime {
     const text = String(message);
     const duration = options?.duration ? options.duration === Infinity ? -1 : Number(options.duration) : 0;
     const hideFloat = Boolean(options?.hideFloat);
-    this.#messages.push({ tick: this.currentTick, entityId: entity.id, text, duration, hideFloat });
+    this.#recordMessage({ tick: this.currentTick, entityId: entity.id, text, duration, hideFloat });
     this.logger.info(`[script:entity:${entity.id}] ${text}`);
     if (!Number.isSafeInteger(entity._backendEntityId) || entity._backendEntityId < 1) return;
     Promise.resolve(this.sendChatMessage(undefined, {
@@ -962,6 +990,8 @@ function runtimeEntityProjectionPayload(entity) {
     restitution: entity.restitution,
     meshScale: entity.meshScale.toArray(),
     meshOrientation: quaternionArray(entity.meshOrientation),
+    meshOffset: entity.meshOffset.toArray(),
+    meshColor: rgbaBytes(entity.meshColor),
     meshInvisible: entity.meshInvisible,
     meshMetalness: entity.meshMetalness,
     meshEmissive: entity.meshEmissive,
@@ -979,6 +1009,34 @@ function quaternionFrom(value) {
 
 function quaternionArray(value) {
   return [value.w, value.x, value.y, value.z];
+}
+
+function freezeFluidContacts(fluids) {
+  return Object.freeze([...fluids.values()].map(contact => Object.freeze({ voxel: contact.voxel, volume: contact.volume })));
+}
+
+// Legacy fallback for packages built before entities.json carried an explicit id. It is only
+// unambiguous when exactly one tag uses the reserved prefix; otherwise the caller must not guess.
+function taggedEntityId(tags) {
+  const tagged = tags.filter(tag => typeof tag === "string" && tag.startsWith("id-"));
+  return tagged.length === 1 ? tagged[0].slice(3) : undefined;
+}
+
+function rgbaFrom(value) {
+  if (value instanceof GameRGBAColor) return value.clone();
+  if (value instanceof GameRGBColor) return value.toRGBA();
+  if (Array.isArray(value) && (value.length === 3 || value.length === 4)) return new GameRGBAColor(value[0], value[1], value[2], value.length === 4 ? value[3] : 1);
+  if (value && typeof value === "object") return new GameRGBAColor(value.r, value.g, value.b, value.a ?? 1);
+  throw new TypeError("Expected a GameRGBAColor-compatible value");
+}
+
+// The authoritative runtime validates model colours as four unsigned bytes, while the Script
+// Runtime keeps the recovered 0..1 component range.
+function rgbaBytes(color) {
+  return [color.r, color.g, color.b, color.a].map(component => {
+    const scaled = Math.round(Number(component) * 255);
+    return Number.isFinite(scaled) ? Math.min(255, Math.max(0, scaled)) : 255;
+  });
 }
 
 export function createRuntimeEntity(input, runtime = null) {
@@ -1002,7 +1060,7 @@ export function createRuntimeEntity(input, runtime = null) {
     meshScale: Vector3.from(input.meshScale ?? [1 / 64, 1 / 64, 1 / 64]),
     meshOrientation: quaternionFrom(input.meshOrientation ?? [0, 0, 0, 1]),
     meshOffset: Vector3.from(input.meshOffset ?? [0, 0, 0]),
-    meshColor: new GameRGBAColor(1, 1, 1, 1),
+    meshColor: input.meshColor === undefined || input.meshColor === null ? new GameRGBAColor(1, 1, 1, 1) : rgbaFrom(input.meshColor),
     meshMetalness: Number(input.meshMetalness ?? 0),
     meshEmissive: Number(input.meshEmissive ?? 0),
     meshShininess: Number(input.meshShininess ?? 0),
@@ -1015,6 +1073,7 @@ export function createRuntimeEntity(input, runtime = null) {
     _restitution: Number(input.restitution ?? 0),
     enableInteract: Boolean(input.enableInteract ?? false),
     _tags: tags,
+    _fluids: new Map(),
     _signals: { click: new EventSignal(), interact: new EventSignal(), destroy: new EventSignal(), voxelContact: new EventSignal(), voxelSeparate: new EventSignal(), fluidEnter: new EventSignal(), fluidLeave: new EventSignal(), takeDamage: new EventSignal(), die: new EventSignal() },
     _destroyed: false,
     _enableDamage: Boolean(input.enableDamage ?? false),
@@ -1052,7 +1111,9 @@ export function createRuntimeEntity(input, runtime = null) {
     get restitution() { return this._restitution; },
     set restitution(value) { this._restitution = Number(value); this._runtime?._entityPhysicsChanged(this); },
     get tags() { return this._tags; },
-    get fluidContacts() { return Object.freeze([...this._body.fluids.values()].map(contact => Object.freeze({ voxel: contact.voxel, volume: contact.volume }))); },
+    // Entities carry their own fluid map: only players have a simulated _body, so reading
+    // this._body.fluids here threw for every entity.
+    get fluidContacts() { return freezeFluidContacts(this._fluids); },
     addTag(tag) { this._tags.add(String(tag)); },
     removeTag(tag) { this._tags.delete(String(tag)); },
     hasTag(tag) { return this._tags.has(String(tag)); },
@@ -1142,6 +1203,7 @@ function createRuntimePlayer(runtime, input) {
     get maxHp() { return this._maxHp; },
     set maxHp(value) { this._maxHp = Number(value); runtime._damageFieldChanged(this); },
     get tags() { return this._tags; },
+    get fluidContacts() { return freezeFluidContacts(this._body.fluids); },
     addTag(tag) { this._tags.add(String(tag)); },
     removeTag(tag) { this._tags.delete(String(tag)); },
     hasTag(tag) { return this._tags.has(String(tag)); },
