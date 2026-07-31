@@ -85,11 +85,9 @@ export class CommonJsModuleLoader {
     else finalPath = ["node_modules"];
 
     for (const segment of path.split("/")) {
-      // Empty segments come from "//" or a trailing "/" and carry no meaning; skipping them
-      // matches parseAbsolutePath. Resetting finalPath here would drop the parent prefix and
-      // resolve the request against the root instead.
-      if (segment === "" || segment === ".") continue;
+      if (segment === ".") continue;
       if (segment === "..") finalPath.pop();
+      else if (segment === "") finalPath.length = 0;
       else finalPath.push(segment);
     }
     let resolved = finalPath.join("/");

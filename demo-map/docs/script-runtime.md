@@ -12,7 +12,7 @@ Entity projection uses separate launch semantics. Static project entities are re
 
 Static client UI uses the recovered `gameUI.reset` state already accepted by the Player backend. When a source project supplies that state, the importer validates and republishes it and the launcher passes its manifest instead of enabling the minimal `gameUI` identity. Capability generation verifies literal global/default-screen `findChildByName` calls against the tree, blocks dynamic or missing lookups, and leaves uncertain receiver-subtree lookups `partial` rather than assuming a match.
 
-Before either Runtime starts, the importer produces `capabilities/manifest.json`. The launcher rejects missing grants and declarations without executable bindings, warns for explicitly partial surfaces, and never widens capabilities to make a script start. UI class variables (`UiText`, `UiImage`, `UiBox`, `UiInput`, `UiScale`, `UiScrollBox`) resolve their inherited layout members (`anchor`, `position`, `size`, …) against the `UiRenderable` declarations in the ABI matrix, matching the matrix's own split of text members onto the concrete class and layout members onto the base class.
+Before either Runtime starts, the importer produces `capabilities/manifest.json`. The launcher rejects missing grants and declarations without executable bindings, warns for explicitly partial surfaces, and never widens capabilities to make a script start.
 
 The Demo client requests `client.core`, `client.ui`, and `client.remote-channel`. Its `client.js` creates a historical Player `UiText` status panel and updates it from server events, making the independent SES client Runtime visible in-game rather than only through console logs.
 

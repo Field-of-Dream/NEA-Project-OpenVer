@@ -69,10 +69,6 @@ export async function importMapProject(sourceRoot, outputRoot, options = {}) {
   });
   await writeJson(files.entities, {
     entities: source.entities.map(entity => ({
-      // The explicit id is authoritative. The "id-" tag stays for packages that predate this
-      // field, but it cannot round-trip on its own: an author tag such as "id-marker" sorts
-      // ahead of the real one and silently rebinds the entity.
-      id: entity.id,
       kind: entity.kind,
       position: entity.position,
       tags: [...new Set([`id-${entity.id}`, ...entity.tags])].sort(),

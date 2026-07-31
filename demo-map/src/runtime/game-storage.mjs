@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -31,25 +31,8 @@ export class LocalGameStorage {
   }
 
   async #load() {
-    // A failed read must not be cached: clearing #loaded lets a later call retry once the
-    // underlying file is readable again instead of replaying the same rejection forever.
-    if (!this.#loaded) this.#loaded = this.#readState().catch(error => { this.#loaded = undefined; throw error; });
+    if (!this.#loaded) this.#loaded = readFile(this.#file, "utf8").then(JSON.parse).then(value => { this.#state = value; }).catch(error => { if (error.code !== "ENOENT") throw error; });
     await this.#loaded;
-  }
-
-  async #readState() {
-    let parsed;
-    try {
-      parsed = JSON.parse(await readFile(this.#file, "utf8"));
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        this.#state = { spaces: {} };
-        return;
-      }
-      throw error;
-    }
-    if (!isRecord(parsed) || !isRecord(parsed.spaces)) throw new Error(`Runtime storage file is not a valid storage document: ${this.#file}`);
-    this.#state = parsed;
   }
 
   async #get(spaceKey, itemKey) {
@@ -142,25 +125,13 @@ export class LocalGameStorage {
   }
 
   #persist() {
-    // Recover the queue on both settlement paths: chaining only through .then() leaves the
-    // queue permanently rejected after a single transient write error, silently dropping
-    // every later write.
-    const write = this.#writeQueue.then(() => this.#writeState(), () => this.#writeState());
-    this.#writeQueue = write.then(() => undefined, () => undefined);
-    return write;
-  }
-
-  async #writeState() {
-    await mkdir(dirname(this.#file), { recursive: true });
-    // A per-process temporary name keeps two runtimes sharing one file from clobbering each other.
-    const temporary = `${this.#file}.${process.pid}.tmp`;
-    try {
+    this.#writeQueue = this.#writeQueue.then(async () => {
+      await mkdir(dirname(this.#file), { recursive: true });
+      const temporary = `${this.#file}.tmp`;
       await writeFile(temporary, `${JSON.stringify(this.#state, null, 2)}\n`);
       await rename(temporary, this.#file);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => {});
-      throw error;
-    }
+    });
+    return this.#writeQueue;
   }
 
   #assign(spaceKey, itemKey, value) {
@@ -216,7 +187,6 @@ function validateName(value) { if (typeof value !== "string" || value.length < 1
 function validateKey(value) { if (typeof value !== "string" || value.length < 1) throw new Error("Invalid data key."); }
 function validateValue(value) { if (!isJsonValue(value, new Set())) throw new Error("Invalid data value."); }
 function cloneReturn(value) { return value === undefined ? undefined : structuredClone(value); }
-function isRecord(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 
 function isJsonValue(value, ancestors) {
   if (typeof value === "string" || typeof value === "boolean") return true;
