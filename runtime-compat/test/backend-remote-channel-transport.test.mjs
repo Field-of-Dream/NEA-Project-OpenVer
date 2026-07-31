@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const backendUrl = new URL("../../local-player/backend/box3-server.cjs", import.meta.url);
@@ -20,18 +19,6 @@ function loadRemoteChannelSessions() {
     RemoteChannelSessions: undefined,
     requireSessionId3(sessionId) {
       if (typeof sessionId !== "string" || sessionId.length === 0) throw new TypeError("sessionId is required");
-    },
-    // The class resolves session labels through these bundle-level helpers; slicing the class
-    // out of the bundle leaves them undefined unless the harness mirrors them here.
-    shortSession(value) {
-      if (value.length <= 12) return value;
-      return `${value.slice(0, 6)}...${value.slice(-4)}`;
-    },
-    sessionBridgeLabel(value) {
-      return `session-sha256-${createHash("sha256").update(value, "utf8").digest("hex")}`;
-    },
-    matchesSessionLabel(sessionId, label) {
-      return sessionId === label || context.sessionBridgeLabel(sessionId) === label || context.shortSession(sessionId) === label;
     },
   };
   vm.runInNewContext(classSource, context);

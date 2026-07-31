@@ -21,10 +21,7 @@ export function normalizeCapabilityEntities(entities) {
   if (!Array.isArray(entities)) throw new Error("Capability entity input must be an array");
   return entities.map((entity, index) => {
     if (!entity || typeof entity !== "object" || Array.isArray(entity)) throw new Error(`Capability entity input is invalid at ${index}`);
-    // Only trust the legacy "id-" tag when exactly one tag uses the reserved prefix: an author
-    // tag such as "id-marker" would otherwise rebind the entity and collapse two ids into one.
-    const tagged = Array.isArray(entity.tags) ? entity.tags.filter(tag => typeof tag === "string" && tag.startsWith("id-")) : [];
-    const taggedId = tagged.length === 1 ? tagged[0].slice(3) : null;
+    const taggedId = Array.isArray(entity.tags) ? entity.tags.find(tag => typeof tag === "string" && tag.startsWith("id-"))?.slice(3) : null;
     const id = String(entity.id ?? entity.sourceId ?? taggedId ?? `entity-${index + 1}`);
     const kind = String(entity.kind ?? entity.source?.kind ?? "entity");
     const mesh = entity.mesh ?? entity.source?.mesh ?? entity.visual?.assetPath ?? null;
